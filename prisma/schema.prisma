@@ -1,0 +1,529 @@
+// prisma/schema.prisma
+// Baseado em DATABASE_SCHEMA.md — todos os 14 models confirmados
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ═══════════════════════════════════════
+// AUTH
+// ═══════════════════════════════════════
+
+model User {
+  id            String    @id @default(uuid())
+  email         String    @unique
+  name          String?
+  image         String?
+  emailVerified DateTime?
+  password      String?   // bcrypt hash — null para OAuth providers futuros
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // NextAuth relations
+  accounts      Account[]
+  sessions      Session[]
+
+  // App relations
+  projects      Project[]
+  userMedia     UserMedia[]
+  subscription  Subscription?
+  creditsLedger CreditsLedger[]
+  themes        Theme[]
+  apiKeys       ApiKey[]
+  teamMembers   TeamMember[]
+
+  @@map("users")
+}
+
+model Account {
+  id                String  @id @default(uuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(uuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+// ═══════════════════════════════════════
+// CORE — PROJECT
+// ═══════════════════════════════════════
+
+enum ProjectStatus {
+  uploading
+  processing
+  transcribing
+  ready_to_edit
+  exporting
+  completed
+  failed
+}
+
+enum WordType {
+  word
+  silence
+  punctuation
+}
+
+enum JobStatus {
+  queued
+  processing
+  completed
+  failed
+}
+
+enum JobType {
+  transcription
+  silence_removal
+  bad_takes
+  clean_audio
+  broll_generation
+  magic_zooms
+  export
+  magic_clips
+  hook_title
+}
+
+enum MediaType {
+  VIDEO
+  IMAGE
+  AUDIO
+}
+
+enum SubscriptionPlan {
+  beta
+  free
+  pro
+  business
+}
+
+enum SubscriptionStatus {
+  active
+  canceled
+  past_due
+  trialing
+}
+
+enum TeamRole {
+  owner
+  admin
+  member
+  viewer
+}
+
+model Project {
+  id     String @id @default(uuid())
+  userId String
+
+  // Metadata
+  title    String
+  status   ProjectStatus @default(uploading)
+  language String        @default("pt")
+
+  // Video file
+  sourceKey     String  // R2/S3 key do original
+  outputKey     String? // S3 key do output final
+  thumbnailKey  String?
+  videoWidth    Int     @default(1080)
+  videoHeight   Int     @default(1920)
+  videoDuration Float   @default(0)
+  videoFps      Int     @default(30)
+  videoSize     BigInt  @default(0)
+
+  // URLs de entrega
+  directUrl   String? // CloudFront URL [CONFIRMADO]
+  downloadUrl String? // URL assinada S3
+  previewUrl  String? // URL de preview (antes do export)
+
+  // Template de caption
+  templateName String @default("Karl")
+
+  // AI features [CONFIRMADO via API Submagic]
+  magicZooms             Boolean @default(false)
+  magicBrolls            Boolean @default(false)
+  magicBrollsPercentage  Int     @default(50)
+  removeSilencePace      String? // extra_fast | fast | natural
+  removeBadTakes         Boolean @default(false)
+  cleanAudio             Boolean @default(false)
+  disableCaptions        Boolean @default(false)
+  faceTracking           Boolean @default(false)
+
+  // Hook title [CONFIRMADO: top/size são 0-80]
+  hookTitleText     String?
+  hookTitleTemplate String?
+  hookTitleTop      Int?
+  hookTitleSize     Int?
+
+  // Webhook
+  webhookUrl String?
+
+  // Erro (se status=failed)
+  failureReason String?
+
+  // Transcrição
+  transcriptionStatus String @default("PENDING")
+
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relations
+  user         User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  words        Word[]
+  jobs         Job[]
+  items        ProjectItem[]
+  magicClips   MagicClip[]
+  projectMusic ProjectMusic?
+  dictionary   ProjectDictionary[]
+
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("projects")
+}
+
+model Word {
+  id        String   @id @default(uuid())
+  projectId String
+  text      String   @default("") // "" para silences
+  type      WordType @default(word)
+  startTime Float    // segundos
+  endTime   Float    // segundos
+  confidence Float?  // 0.0–1.0 (null para silence/punctuation)
+  isFiller  Boolean  @default(false)
+  isRemoved Boolean  @default(false) // soft delete [CONFIRMADO]
+  position  Int      // ordem na transcrição
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([projectId, position])
+  @@index([projectId, startTime])
+  @@map("words")
+}
+
+model Job {
+  id          String    @id @default(uuid())
+  projectId   String
+  type        JobType
+  status      JobStatus @default(queued)
+  progress    Int       @default(0) // 0-100
+  bullmqJobId String?   @unique
+  errorMsg    String?
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([status])
+  @@map("jobs")
+}
+
+model ProjectItem {
+  id        String @id @default(uuid())
+  projectId String
+
+  // Tipo de item
+  type String // ai_broll | user_broll | image | text_overlay
+
+  // B-roll [CONFIRMADO via API]
+  prompt    String? // query gerada pelo GPT-4o-mini
+  assetUrl  String? // URL do vídeo Pexels
+  localKey  String? // S3 key após download
+
+  // Timing
+  startTime Float
+  endTime   Float
+
+  // Layout [CONFIRMADO: 10 layouts]
+  layout String @default("cover")
+
+  // Créditos consumidos
+  creditsConsumed Int @default(0)
+
+  createdAt DateTime @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@map("project_items")
+}
+
+model ProjectMusic {
+  id            String  @id @default(uuid())
+  projectId     String  @unique
+  userMediaId   String?
+  volume        Int     @default(30)   // 0-100
+  startFromTime Float   @default(0)
+  fade          Boolean @default(true)
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@map("project_music")
+}
+
+model ProjectDictionary {
+  id        String @id @default(uuid())
+  projectId String
+  word      String
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, word])
+  @@map("project_dictionary")
+}
+
+// ═══════════════════════════════════════
+// MAGIC CLIPS
+// ═══════════════════════════════════════
+
+model MagicClip {
+  id        String @id @default(uuid())
+  projectId String
+
+  title     String?
+  outputKey String?
+  directUrl String?
+  downloadUrl String?
+
+  startTime Float
+  endTime   Float
+  duration  Float
+
+  // Virality scores [CONFIRMADO via webhook Submagic]
+  viralityTotal          Int @default(0)
+  viralityShareability   Int @default(0)
+  viralityHookStrength   Int @default(0)
+  viralityStoryQuality   Int @default(0)
+  viralityEmotionalImpact Int @default(0)
+
+  createdAt DateTime @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@map("magic_clips")
+}
+
+// ═══════════════════════════════════════
+// USER MEDIA
+// ═══════════════════════════════════════
+
+model UserMedia {
+  id     String @id @default(uuid())
+  userId String
+
+  type        MediaType
+  name        String
+  originalKey String
+  processedKey String?
+  processedUrl String?
+  fileSize    BigInt  @default(0)
+  duration    Float?
+  width       Int?
+  height      Int?
+  status      String  @default("uploading") // uploading | processing | ready | failed
+  mimeType    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([userId, type])
+  @@map("user_media")
+}
+
+// ═══════════════════════════════════════
+// TEMPLATES & THEMES
+// ═══════════════════════════════════════
+
+model Preset {
+  id          String @id @default(uuid())
+  name        String @unique
+  displayName String
+  isPremium   Boolean @default(false)
+  category    String  @default("trend")
+  previewImageUrl String?
+  sortOrder   Int     @default(0)
+
+  // Style config (JSON)
+  fontFamily      String @default("Montserrat")
+  fontWeight      Int    @default(900)
+  fontSize        Int    @default(36)
+  textColor       String @default("#FFFFFF")
+  highlightColor  String @default("#FF6B00")
+  shadowEnabled   Boolean @default(true)
+  shadowColor     String  @default("#000000")
+  outlineEnabled  Boolean @default(true)
+  outlineColor    String  @default("#000000")
+  outlineWidth    Int     @default(2)
+  positionX       Int     @default(50)
+  positionY       Int     @default(55)
+  animationType   String  @default("karaoke")
+
+  createdAt DateTime @default(now())
+
+  @@map("presets")
+}
+
+model Theme {
+  id     String @id @default(uuid())
+  userId String
+  name   String
+
+  fontFamily      String @default("Montserrat")
+  fontWeight      Int    @default(900)
+  fontSize        Int    @default(36)
+  textColor       String @default("#FFFFFF")
+  highlightColor  String @default("#FF6B00")
+  shadowEnabled   Boolean @default(true)
+  shadowColor     String  @default("#000000")
+  outlineEnabled  Boolean @default(true)
+  outlineColor    String  @default("#000000")
+  outlineWidth    Int     @default(2)
+  positionX       Int     @default(50)
+  positionY       Int     @default(55)
+
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("themes")
+}
+
+// ═══════════════════════════════════════
+// SUBSCRIPTION & CREDITS
+// ═══════════════════════════════════════
+
+model Subscription {
+  id     String @id @default(uuid())
+  userId String @unique
+
+  plan             SubscriptionPlan   @default(beta)
+  status           SubscriptionStatus @default(active)
+  stripeCustomerId String?
+  stripePriceId    String?
+  stripeSubId      String?
+  currentPeriodEnd DateTime?
+  creditsResetAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("subscriptions")
+}
+
+model CreditsLedger {
+  id          String  @id @default(uuid())
+  userId      String
+  amount      Int     // positivo = crédito, negativo = débito [append-only]
+  operation   String  // "monthly_reset" | "purchase" | "refund" | "beta_grant" | "ai_broll_generation" | ...
+  projectId   String?
+  description String?
+  balanceAfter Int
+
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([userId, createdAt])
+  @@map("credits_ledger")
+}
+
+// ═══════════════════════════════════════
+// API KEYS (Sprint 3)
+// ═══════════════════════════════════════
+
+model ApiKey {
+  id     String @id @default(uuid())
+  userId String
+  name   String
+  key    String @unique // sk_live_...
+  lastUsedAt DateTime?
+  expiresAt  DateTime?
+  isActive   Boolean @default(true)
+
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([key])
+  @@index([userId])
+  @@map("api_keys")
+}
+
+// ═══════════════════════════════════════
+// TEAMS (Sprint 3)
+// ═══════════════════════════════════════
+
+model Team {
+  id   String @id @default(uuid())
+  name String
+  slug String @unique
+
+  members TeamMember[]
+
+  createdAt DateTime @default(now())
+
+  @@map("teams")
+}
+
+model TeamMember {
+  id     String   @id @default(uuid())
+  teamId String
+  userId String
+  role   TeamRole @default(member)
+
+  joinedAt DateTime @default(now())
+
+  team Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([teamId, userId])
+  @@map("team_members")
+}
