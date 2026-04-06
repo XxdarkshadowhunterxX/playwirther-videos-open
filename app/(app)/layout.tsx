@@ -96,14 +96,14 @@ export default async function AppLayout({
               <form
                 action={async () => {
                   "use server";
-                  await signOut({ redirectTo: "/" });
+                  await signOut({ redirectTo: "/login" });
                 }}
               >
                 <button
                   type="submit"
                   className="w-full text-left px-3 py-2 text-sm text-text-secondary hover:text-text-primary hover:bg-surface-elevated rounded-lg transition-colors"
                 >
-                  Sign out
+                  Sair
                 </button>
               </form>
             </div>

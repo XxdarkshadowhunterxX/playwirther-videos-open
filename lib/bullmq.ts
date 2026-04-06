@@ -66,8 +66,9 @@ export async function enqueueExport(data: {
   userId: string;
   resolution?: string;
 }) {
+  // jobId com timestamp evita rejeição por duplicata no BullMQ
   return videoExportQueue.add("export", data, {
-    jobId: `export-${data.projectId}`,
+    jobId: `export-${data.projectId}-${Date.now()}`,
   });
 }
 

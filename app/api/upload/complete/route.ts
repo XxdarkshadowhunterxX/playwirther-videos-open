@@ -1,7 +1,7 @@
 // app/api/upload/complete/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
-import { completeR2MultipartUpload } from "@/lib/s3";
+import { completeS3MultipartUpload } from "@/lib/s3";
 
 export async function POST(req: NextRequest) {
   const session = await auth();
@@ -23,8 +23,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Completar multipart no R2
-  await completeR2MultipartUpload(
+  await completeS3MultipartUpload(
     key,
     uploadId,
     parts.map((p) => ({ PartNumber: p.partNumber, ETag: `"${p.etag}"` }))

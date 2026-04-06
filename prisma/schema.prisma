@@ -273,6 +273,7 @@ model ProjectItem {
   // Timing
   startTime Float
   endTime   Float
+  mediaOffset Float @default(0)
 
   // Layout [CONFIRMADO: 10 layouts]
   layout String @default("cover")
